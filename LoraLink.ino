@@ -16,8 +16,9 @@
 //
 //--------------------------------------------------------------------
 // 2025/04/12 - FBS V1.00 - LoraLink
+// 2025/07/31 - FBS V1.01 - Ajout calcul Toa (Time On Air)
 //--------------------------------------------------------------------
-
+#include <math.h>
 #include <SPI.h>
 #include <LoRa.h>
 #include <jled.h>
@@ -25,7 +26,7 @@
 #include "payload.h"
 #include "label_tic.h"
 
-#define VERSION "1.00"
+#define VERSION "1.01"
 
 //#define DEBUG_TIC
 
@@ -36,8 +37,15 @@
 #define VOLTAGE_CAPA_MAX	4.8
 #define VOLTAGE_CAPA_MIN	4.5
 
+#define LORA_SF					7
+#define LORA_BW					125E3		
+#define LORA_CR					4
+#define LORA_PREAMBLE_LENGTH	8
+#define LORA_POWER				5
+
 
 const unsigned long SEND_FREQUENCY_FULL = 180000; // 3mn, Minimum time between send (in milliseconds).
+unsigned long lastTime_LoraSend = 0;
 unsigned long lastTime_full = 0;
 const int ledTicPin = PIN_PD1;
 const int ledInfoPin = PIN_PD2;
@@ -56,12 +64,59 @@ bool flag_tic_standard = false;
 bool flag_first_run = true;
 bool full_tic = true;
 
-char cpt_id[PAYLOAD_VALUE_LEN];
+//char cpt_id[PAYLOAD_VALUE_LEN];
+uint32_t LoraToA = 0;
 
 _Mode_e mode_tic;
 TInfo tinfo;
 PayloadData payload_data;
 auto led = JLed(PIN_PD2).Breathe(2000).DelayAfter(300).Forever();
+
+
+// ---------------------------------------------------------------- 
+// calculLoRaToA
+// Calcule le temps entre deux émissions (en ms) en fonction des paramètres LoRa
+// ----------------------------------------------------------------
+uint32_t calculLoRaToA (
+  uint8_t payloadLength,     // longueur du payload (en octets)
+  uint8_t spreadingFactor,   // SF7 à SF12
+  uint32_t bandwidth,        // en Hz (ex : 125000)
+  uint8_t codingRate,        // CR = 1 pour 4/5, 2 pour 4/6, etc.
+  uint8_t preambleLength,    // en symboles (souvent 8)
+  bool crcOn,                // true si CRC activé
+  bool headerOn,             // true si header explicite
+  float dutyCyclePercent     // ex: 1.0 pour 1% duty cycle
+) {
+  float tSym = pow(2, spreadingFactor) / (float)bandwidth * 1000.0; // ms
+
+  // Low data rate optimization
+  bool lowDataRate = (spreadingFactor >= 11);
+  uint8_t DE = lowDataRate ? 1 : 0;
+
+  uint8_t IH = headerOn ? 0 : 1; // 0 = header explicite
+
+  // Calcul de la taille du payload en symboles
+  float payloadSymbNb = 8.0 +
+    max(
+      ceil(
+        (8.0 * payloadLength + (crcOn ? 16 : 0) + (IH ? 0 : 20) - 4.0 * spreadingFactor) /
+        (4.0 * (spreadingFactor - 2.0 * DE))
+      ) * (codingRate + 4),
+      0.0
+    );
+
+  // Temps du préambule
+  float tPreamble = (preambleLength + 4.25) * tSym;
+
+  // Temps total d’émission (ToA)
+  float tOnAir = tPreamble + payloadSymbNb * tSym;
+
+  // Calcul du délai minimum entre deux transmissions (en ms)
+  float interval = tOnAir / (dutyCyclePercent / 100.0);
+
+  return (uint32_t)ceil(interval); // en ms
+}
+
 
 // ---------------------------------------------------------------- 
 // rtrim
@@ -261,7 +316,6 @@ _Mode_e mode;
 void sendMessageLora(char *name, char *value) {
   uint8_t buffer[sizeof(payload_data)]; 
 
-
   digitalWrite(ledTicPin, LOW);
 
   rtrim(name); // enlève les éventuels caractères blancs en fin de chaîne
@@ -269,24 +323,37 @@ void sendMessageLora(char *name, char *value) {
   payload_data.label_id = find_label_id(name, flag_tic_standard);
   if (payload_data.label_id != 0) { // test validité id
 
+	if (millis()-lastTime_LoraSend < LoraToA) {
+		debug.print(F("wait Toa - "));
+		debug.print(LoraToA);
+		debug.print(F("ms."));
+	}
+	while (millis()-lastTime_LoraSend < LoraToA) {}; // Attendre pour être conforme à la réglementation Time Of Air LoRa.
+	debug.println(F(" - ok."));
+	
+	debug.print(F("check Capa"));
     while (verifSuperCapa(VOLTAGE_CAPA_MIN) == false) {}
+	debug.println(F(" - ok."));
 
     payload_set_value_str(&payload_data, value);
     payload_finalize(&payload_data);
     payload_serialize(&payload_data, buffer);
+	
+	lastTime_LoraSend = millis();
+	
+	debug.print(F("sendMessageLora:"));
+	debug.print(name);
+	debug.print(F("-"));
+	debug.print(payload_data.label_id);
+	debug.print(F("-"));
+	debug.println(value);
 
-    debug.print("sendMessageLora:");
-    debug.print(name);
-    debug.print("-");
-    debug.print(payload_data.label_id);
-    debug.print("-");
-    debug.println(value);
+	LoRa.beginPacket();                   // start packet
+	LoRa.write(buffer, sizeof(payload_data));
+	LoRa.endPacket();                     // finish packet and send it
+	delay(10);
+	LoRa.idle();
 
-    LoRa.beginPacket();                   // start packet
-    LoRa.write(buffer, sizeof(payload_data));
-    LoRa.endPacket();                     // finish packet and send it
-    delay(10);
-    LoRa.idle();
   }
   else {
     digitalWrite(ledInfoPin, HIGH);
@@ -305,10 +372,12 @@ void sendMessageLora(char *name, char *value) {
 // ---------------------------------------------------------------- 
 void sendTeleinfo(ValueList *vl_tic, bool all_tic)
 {
+	
   if (vl_tic) {
 
-    Serial.print("sendTeleinfo:");
-    Serial.println(vl_tic->flags);
+    //debug.print("sendTeleinfo:");
+    //debug.println(vl_tic->flags);
+	
     // parcours liste chainée vl_tic
     while (vl_tic->next) {
       vl_tic = vl_tic->next;
@@ -341,8 +410,8 @@ bool rc = false;
       if (vl_tic->name && strlen(vl_tic->name) && vl_tic->value && strlen(vl_tic->value)) {
         if (strstr_P(vl_tic->name, char_ADCO) == 0 || strstr_P(vl_tic->name, char_ADSC) == 0) {
           
-          Serial.print(F("Adr cpt: "));
-          Serial.println(vl_tic->value);
+          debug.print(F("Adr cpt: "));
+          debug.println(vl_tic->value);
           payload_set_counter_addr(&payload_data, vl_tic->value);
           rc = true;
           break;
@@ -358,10 +427,10 @@ bool rc = false;
 // ---------------------------------------------------------------- 
 void newFrame(ValueList *vl_tic)
 {
-  /*Serial.print("newFrame:");
-  Serial.print(flag_counter_addr);
-  Serial.print("-");
-  Serial.println(full_tic);*/
+  /*debug.print("newFrame:");
+  debug.print(flag_counter_addr);
+  debug.print("-");
+  debug.println(full_tic);*/
 
   if (flag_counter_addr == false) flag_counter_addr = search_adress_teleinfo(vl_tic);
     else sendTeleinfo(vl_tic, full_tic);
@@ -375,10 +444,10 @@ void newFrame(ValueList *vl_tic)
 void updatedFrame(ValueList *vl_tic)
 {
 
-  /*Serial.print("updatedFrame:");
-  Serial.print(flag_counter_addr);
-  Serial.print("-");
-  Serial.println(full_tic);*/
+  /*debug.print("updatedFrame:");
+  debug.print(flag_counter_addr);
+  debug.print("-");
+  debug.println(full_tic);*/
 
   if (flag_counter_addr == false) flag_counter_addr = search_adress_teleinfo(vl_tic);
     else sendTeleinfo(vl_tic, full_tic);
@@ -462,16 +531,21 @@ void setup() {
   debug.print(F("Init LoRa : "));
   LoRa.setPins(csPin, resetPin, irqPin);
   if (LoRa.begin(frequency)) {
-    LoRa.setSpreadingFactor(7);
-    LoRa.setSignalBandwidth(125E3);
-    LoRa.setCodingRate4(4);
-    LoRa.setPreambleLength(8);
-    LoRa.setSyncWord(0xFB);
+	LoRa.setSpreadingFactor(LORA_SF);
+    LoRa.setSignalBandwidth(LORA_BW);
+    LoRa.setCodingRate4(LORA_CR);
+    LoRa.setPreambleLength(LORA_PREAMBLE_LENGTH);
     LoRa.enableCrc();
-    LoRa.setTxPower(5);
-	  LoRa.idle();
+    LoRa.setTxPower(LORA_POWER);
 	
-	  debug.println(F("ok"));
+	LoRa.idle();
+	
+	debug.println(F("ok"));
+  
+	LoraToA = calculLoRaToA(sizeof(PayloadData), LORA_SF, LORA_BW, LORA_CR, LORA_PREAMBLE_LENGTH, true, true, 1.0);
+	debug.print(F("Lora ToA="));
+	debug.print(LoraToA);
+	debug.println(F("ms."));
   }
   else {
     debug.println(F("ko!"));
