@@ -5,7 +5,6 @@
 #include <stdbool.h>
 
 #define PAYLOAD_VALUE_LEN 13  // 12 caractères utiles + '\0'
-#define PREABLE_VALUE     0xA5
 
 enum _sender_id {
   LORALINK_H = 1,
@@ -16,13 +15,13 @@ enum _sender_id {
 };
 
 typedef struct __attribute__((packed)) {
-    uint8_t preamble;
     uint8_t sender_id;
     uint8_t counter_addr[5];
     uint8_t label_id;          // identifiant d’étiquette TIC
     char value[PAYLOAD_VALUE_LEN]; // chaîne ASCII terminée par '\0'
     uint8_t crc;
 } PayloadData;
+
 
 // Fonctions d’accès
 void payload_set_value_str(PayloadData* p, const char* str);
@@ -43,5 +42,6 @@ bool payload_deserialize(PayloadData* p, const uint8_t* buffer, int length);
 
 // Divers
 void printUint64(uint64_t value);
+bool is_valid_sender_id(uint8_t id);
 
 #endif // PAYLOAD_H

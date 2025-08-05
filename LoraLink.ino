@@ -17,6 +17,7 @@
 //--------------------------------------------------------------------
 // 2025/04/12 - FBS V1.00 - LoraLink
 // 2025/07/31 - FBS V1.01 - Ajout calcul Toa (Time On Air)
+// 2025/08/04 - FBS V1.02 - Optimisation du payload Lora
 //--------------------------------------------------------------------
 #include <math.h>
 #include <SPI.h>
@@ -26,7 +27,7 @@
 #include "payload.h"
 #include "label_tic.h"
 
-#define VERSION "1.01"
+#define VERSION "1.02"
 
 //#define DEBUG_TIC
 
@@ -41,20 +42,20 @@
 #define LORA_BW					125E3		
 #define LORA_CR					4
 #define LORA_PREAMBLE_LENGTH	8
-#define LORA_POWER				5
+#define LORA_POWER			6
 
 
-const unsigned long SEND_FREQUENCY_FULL = 180000; // 3mn, Minimum time between send (in milliseconds).
+const unsigned long SEND_FREQUENCY_FULL = 600000; // 10 mn, Minimum time between send (in milliseconds).
 unsigned long lastTime_LoraSend = 0;
 unsigned long lastTime_full = 0;
 const int ledTicPin = PIN_PD1;
 const int ledInfoPin = PIN_PD2;
 const int vcapPin = PIN_PD0;
 
-const long frequency = 868E6; // LoRa Frequency
-const int csPin = PIN_PA7; //7;          // LoRa radio chip select
-const int resetPin = PIN_PF6; //2;       // LoRa radio reset
-const int irqPin = PIN_PA3; //3;         // change for your board; must be a hardware interrupt pin
+const long frequency = 868E6; 	// LoRa Frequency
+const int csPin = PIN_PA7; 		// LoRa radio chip select
+const int resetPin = PIN_PF6; 	// LoRa radio reset
+const int irqPin = PIN_PA3; 	// interrupt pin
 
 const char char_ADCO[] PROGMEM = "ADCO";
 const char char_ADSC[] PROGMEM = "ADSC";
@@ -70,7 +71,8 @@ uint32_t LoraToA = 0;
 _Mode_e mode_tic;
 TInfo tinfo;
 PayloadData payload_data;
-auto led = JLed(PIN_PD2).Breathe(2000).DelayAfter(300).Forever();
+auto led = JLed(PIN_PD2).Breathe(2000).Forever();
+
 
 
 // ---------------------------------------------------------------- 
@@ -164,8 +166,8 @@ bool verifSuperCapa(float voltageRef) {
   if (millis() - tempo > 5000) {  // affiche tension toutes les 5 secondes
     tempo = millis();
 
-	  debug.print("Tension capa:");
-	  debug.println(tensionCapa, 3);
+	  debug.print(F(" Tension capa:"));
+	  debug.print(tensionCapa, 3);
   }
   led.Update();
 
@@ -314,7 +316,8 @@ _Mode_e mode;
 //    Envoi trame de teleinfo
 // ---------------------------------------------------------------- 
 void sendMessageLora(char *name, char *value) {
-  uint8_t buffer[sizeof(payload_data)]; 
+  uint8_t size_payload = sizeof(payload_data);
+  uint8_t buffer[size_payload]; 
 
   digitalWrite(ledTicPin, LOW);
 
@@ -323,23 +326,18 @@ void sendMessageLora(char *name, char *value) {
   payload_data.label_id = find_label_id(name, flag_tic_standard);
   if (payload_data.label_id != 0) { // test validité id
 
-	if (millis()-lastTime_LoraSend < LoraToA) {
-		debug.print(F("wait Toa - "));
-		debug.print(LoraToA);
-		debug.print(F("ms."));
-	}
+	payload_set_value_str(&payload_data, value);
+  payload_finalize(&payload_data);
+  payload_serialize(&payload_data, buffer);
+		
+	// Vérif Toa avant envoi ----------
+	if (millis()-lastTime_LoraSend < LoraToA) debug.print(F(" wait.. "));
 	while (millis()-lastTime_LoraSend < LoraToA) {}; // Attendre pour être conforme à la réglementation Time Of Air LoRa.
 	debug.println(F(" - ok."));
 	
-	debug.print(F("check Capa"));
-    while (verifSuperCapa(VOLTAGE_CAPA_MIN) == false) {}
+	debug.print(F("check Capa "));
+  while (verifSuperCapa(VOLTAGE_CAPA_MIN) == false) {}
 	debug.println(F(" - ok."));
-
-    payload_set_value_str(&payload_data, value);
-    payload_finalize(&payload_data);
-    payload_serialize(&payload_data, buffer);
-	
-	lastTime_LoraSend = millis();
 	
 	debug.print(F("sendMessageLora:"));
 	debug.print(name);
@@ -349,11 +347,12 @@ void sendMessageLora(char *name, char *value) {
 	debug.println(value);
 
 	LoRa.beginPacket();                   // start packet
-	LoRa.write(buffer, sizeof(payload_data));
+	LoRa.write(buffer, size_payload);
 	LoRa.endPacket();                     // finish packet and send it
 	delay(10);
 	LoRa.idle();
-
+	
+	lastTime_LoraSend = millis();
   }
   else {
     digitalWrite(ledInfoPin, HIGH);
@@ -531,21 +530,21 @@ void setup() {
   debug.print(F("Init LoRa : "));
   LoRa.setPins(csPin, resetPin, irqPin);
   if (LoRa.begin(frequency)) {
-	LoRa.setSpreadingFactor(LORA_SF);
+    LoRa.setSpreadingFactor(LORA_SF);
     LoRa.setSignalBandwidth(LORA_BW);
     LoRa.setCodingRate4(LORA_CR);
     LoRa.setPreambleLength(LORA_PREAMBLE_LENGTH);
     LoRa.enableCrc();
     LoRa.setTxPower(LORA_POWER);
-	
-	LoRa.idle();
-	
-	debug.println(F("ok"));
-  
-	LoraToA = calculLoRaToA(sizeof(PayloadData), LORA_SF, LORA_BW, LORA_CR, LORA_PREAMBLE_LENGTH, true, true, 1.0);
-	debug.print(F("Lora ToA="));
-	debug.print(LoraToA);
-	debug.println(F("ms."));
+    
+    LoRa.idle();
+    
+    debug.println(F("ok"));
+    
+    LoraToA = calculLoRaToA(sizeof(PayloadData), LORA_SF, LORA_BW, LORA_CR, LORA_PREAMBLE_LENGTH, true, true, 1.0);
+    debug.print(F("Lora ToA="));
+    debug.print(LoraToA);
+    debug.println(F("ms."));
   }
   else {
     debug.println(F("ko!"));
@@ -585,7 +584,7 @@ void loop() {
   
   if (tic.available()) {
     c = tic.read();
-    if (c!=TINFO_STX && c!=TINFO_ETX) debug.print((char)(c & 127));
+    //if (c!=TINFO_STX && c!=TINFO_ETX) debug.print((char)(c & 127));
     tinfo.process(c);
   }
 
