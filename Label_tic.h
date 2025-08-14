@@ -4,16 +4,16 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-
-typedef enum {
-    LABEL_TYPE_ASCII = 0,
-    LABEL_TYPE_U16,
-    LABEL_TYPE_U32,
-    LABEL_TYPE_FLOAT
-} label_value_type_t;
+typedef struct {
+    const char* label;
+    uint8_t id;
+    const char* unite;
+    const char* device_class;
+} LabelMap;
 
 
 uint8_t find_label_id(const char* label, bool is_standard);
 const char* find_label_str(uint8_t id, bool is_standard);
+const LabelMap* find_label_by_id(uint8_t id, bool is_standard);
 
 #endif

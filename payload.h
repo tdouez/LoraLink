@@ -22,6 +22,7 @@ typedef struct __attribute__((packed)) {
     uint8_t crc;
 } PayloadData;
 
+const char* sender_id_to_string(uint8_t id);
 
 // Fonctions d’accès
 void payload_set_value_str(PayloadData* p, const char* str);

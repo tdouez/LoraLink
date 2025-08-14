@@ -18,6 +18,7 @@
 // 2025/04/12 - FBS V1.00 - LoraLink
 // 2025/07/31 - FBS V1.01 - Ajout calcul Toa (Time On Air)
 // 2025/08/04 - FBS V1.02 - Optimisation du payload Lora
+// 2025/08/13 - FBS V1.03 - Correction sur le num compteur
 //--------------------------------------------------------------------
 #include <math.h>
 #include <SPI.h>
@@ -27,7 +28,7 @@
 #include "payload.h"
 #include "label_tic.h"
 
-#define VERSION "1.02"
+#define VERSION "1.03"
 
 //#define DEBUG_TIC
 
